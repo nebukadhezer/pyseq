@@ -98,7 +98,7 @@ gFormat = '%04l %h%p%t %R'
 # regex for matching numerical characters
 gDigitsRE = re.compile(r'\d+')
 
-gStereoRE = re.compile(r'(\_|\.)(left|right|l|r|%v|%V)(\_|\.)')
+gStereoRE = re.compile(r'(\_|\.|\/)(left|right|l|r|%v|%V)(\_|\.|\/)')
 
 # regex for matching format directives
 gFormatRE = re.compile(r'%(?P<pad>\d+)?(?P<var>\w+)')
@@ -674,6 +674,25 @@ class stereoSequence(Sequence):
                 return self[0].tail
         return self[0].tail
     
+    def path(self):
+        """:return: Absolute path to sequence."""
+        #_dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
+        return os.path.join(self.dirname(), str(self))
+    
+    def dirname(self):
+        _dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
+        if not _dirname.endswith('/'):
+            _dirname = _dirname + '/'
+        s3d = re.search(gStereoRE, _dirname)
+        if s3d:
+            if 'l' in s3d.groups():
+                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%v', s3d.groups()[-1]),_dirname)
+            elif 'left' in s3d.groups():
+                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%V', s3d.groups()[-1]), _dirname)
+            else:
+                return _dirname
+        return _dirname
+
     def _get_size(self):
         '''
         returns the size all items left and right in bytes
@@ -1083,12 +1102,18 @@ def img2pyseq(path,stereo=True):
     or prj_SQ0010_SH0010_matte_base_v001_%v.%04d.exr
     '''
     padding = re.compile(r'(\_|\.)([0-9]{4}|\%04d|\%d|\%02d|\%03d|\%05d|\#|\#\#|\#\#\#|\#\#\#\#|[0-9]*\-[0-9]*\#)(\_|\.)')
-    found = re.search(padding, path)
+    found = re.findall(padding, path)
+    log.debug('incoming path: %s' % path)
     if found:
-        path = re.sub(padding, '%s*%s' % (path[found.start()],path[found.end()-1]), path)
+        for i in [found[-1]]: #only replace the last occurence as this tends to be the place for paddings
+            path = re.sub(''.join(i), '%s*%s' % (i[0],i[-1]), path)
+    log.debug('after padding replacement: %s' % path)
+    found = re.findall(gStereoRE, path)
+    if found:
+        for i in found:
+            path = re.sub(''.join(i), '%s*%s' % (i[0],i[-1]), path)
+    log.info('after s3d replacement: %s' % path)
     found = re.search(gStereoRE, path)
-    if found:
-        path = re.sub(gStereoRE,'%s*%s' % (path[found.start()],path[found.end()-1]), path)
     seq = getSequences(path,stereo=stereo,folders=False)
     if not seq:
         return None
@@ -1103,14 +1128,13 @@ def img2pyseq(path,stereo=True):
 
 
 
-
 if __name__ == '__main__':
     """
     Run some simple unit tests. Currently, these tests depend on the
     dummy files that live in pyseq/tests. Changing or modifying these
     files may break the assertions in the tests below.
     """
-    #logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO)
 #===============================================================================
     # test passing in a list of files
     testRoot = os.path.join(os.path.dirname(__file__), 'tests')
@@ -1167,7 +1191,7 @@ if __name__ == '__main__':
             print s.right.format('%h%p%t %r')
             print s.format('%h%p%t %r')
             
-    seq = img2pyseq(os.path.join(s3dTestRoot,'012_vb_110_v001_%v.%04d.png'))
+    seq = img2pyseq(os.path.join(s3dTestRoot,'left','012_vb_110_v001_%v.%04d.png'))
     print seq.format('%h%p%t %r')
     print seq.path()
         #print s._get_size()

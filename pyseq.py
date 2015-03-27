@@ -93,10 +93,12 @@ from glob import glob
 from datetime import datetime
 
 # default serialization format string
-gFormat = '%04l %h%p%t %R'
+gFormat = '%4l %h%p%t %R'
 
 # regex for matching numerical characters
 gDigitsRE = re.compile(r'\d+')
+
+gMultiViewPairs = os.environ.get('PYSEQ_MULTIVIEWPAIRS',[('left','right'),('blue','green','yellow'),('l','r'),('gouche','droit'),('rt','lt'),('destra','sinistra')])
 
 gStereoRE = re.compile(r'(\_|\.|\%s)(left|right|l|r|%v|%V)(\_|\.|\%s)' % (os.sep,os.sep))
 
@@ -108,6 +110,8 @@ __all__ = ['SequenceError', 'FormatError', 'Item', 'Sequence', 'diff', 'uncompre
 
 # logging handlers
 log = logging.getLogger('pyseq')
+log.addHandler(logging.StreamHandler())
+log.setLevel(int(os.environ.get('PYSEQ_LOG_LEVEL', logging.INFO)))
 
 class SequenceError(Exception):
     """special exception for sequence errors"""
@@ -116,31 +120,29 @@ class FormatError(Exception):
     """special exception for seq format errors"""
 
 class Item(str):
-    """Sequence member file class"""
+    """Sequence member file class
+
+    :param item: Path to file.
+    """
+
     def __init__(self, item):
-        """
-        Create a new Item class object.
-
-        :param item: Path to file.
-
-        :return: pyseq.Item instance.
-        """
         super(Item, self).__init__()
         log.debug('adding %s' % item)
         self.item = item
         self.__path = getattr(item, 'path', os.path.abspath(str(item)))
         self.__dirname = os.path.dirname(self.__path)
-        self.__filename = os.path.basename(self.__path)
+        self.__filename = os.path.basename(str(item))
         self.__digits = gDigitsRE.findall(self.name)
         self.__parts = gDigitsRE.split(self.name)
+        self.__view = re.search(gStereoRE, self.__filename)
+        
         if os.path.isfile(self.__path):
             self.__size = os.path.getsize(self.__path)
             self.__mtime = os.path.getmtime(self.__path)
         else:
             self.__size = 0
             self.__mtime = 0
-
-        # modified by self.isSibling()
+        # modified by self.is_sibling()
         self.frame = ''
         self.head = self.name
         self.tail = ''
@@ -154,56 +156,70 @@ class Item(str):
     def __getattr__(self, key):
         return getattr(self.item, key, None)
 
-    def _get_path(self):
+    @property
+    def path(self):
+        """Item absolute path, if a filesystem item.
+        """
         return self.__path
 
-    def _get_filename(self):
+    @property
+    def name(self):
+        """Item base name attribute
+        """
         return self.__filename
 
-    def _get_dirname(self):
+    @property
+    def dirname(self):
+        """"Item directory name, if a filesystem item."
+        """
         return self.__dirname
 
-    def _get_digits(self):
+    @property
+    def digits(self):
+        """Numerical components of item name.
+        """
         return self.__digits
-    
-    def _get_size(self):
-        return self.__size
-    
-    def _get_mtime(self):
-        return self.__mtime
 
-    def _get_parts(self):
+    @property
+    def parts(self):
+        """Non-numerical components of item name
+        """
         return self.__parts
 
-    def _get_sig(self):
-        return "".join(self.parts)
+    @property
+    def size(self):
+        """filesize of item
+        """
+        return self.__size
 
-    def _set_readonly(self, value):
-        raise TypeError, 'Read-only attribute'
+    @property
+    def mtime(self):
+        """modification time of item
+        """
+        return self.__mtime
 
-    # immutable properties
-    path = property(_get_path, _set_readonly, doc="Item absolute path, if a filesystem item.")
-    name = property(_get_filename, _set_readonly, doc="Item base name attribute.")
-    dirname = property(_get_dirname, _set_readonly, doc="Item directory name, if a filesystem item.")
-    digits = property(_get_digits, _set_readonly, doc="Numerical components of item name.")
-    size = property(_get_size, _set_readonly, doc="Item Size")
-    parts = property(_get_parts, _set_readonly, doc="Non-numerical components of item name.")
-    signature = property(_get_sig, _set_readonly, doc="Non-numerical unique item signature.")
+    @property
+    def view(self):
+        """re match object of the gStereoRE pattern
+        """
+        return self.__view
 
     def isSibling(self, item):
-        """
-        Determines if this and item are part of the same sequence.
+        """Determines if this and item are part of the same sequence.
 
-        :param item: A pyseq.Item class object.
+        :param item: An :class:`.Item` instance.
 
         :return: True if this and item are sequential siblings.
         """
-        if not type(item) == Item:
+        if not isinstance(item, Item):
             item = Item(item)
-        d = diff(self, item)
-        _isSibling = (len(d) == 1) and (self.parts == item.parts)
 
-        if _isSibling:
+        d = diff(self, item)
+        is_sibling = (len(d) == 1) and (self.parts == item.parts)
+
+        # I do not understand why we are updating information
+        # while this is a predicate method
+        if is_sibling:
             self.frame = d[0]['frames'][0]
             self.head = self.name[:d[0]['start']]
             self.tail = self.name[d[0]['end']:]
@@ -211,7 +227,7 @@ class Item(str):
             item.head = item.name[:d[0]['start']]
             item.tail = item.name[d[0]['end']:]
 
-        return _isSibling
+        return is_sibling
 
 class Sequence(list):
     """
@@ -253,9 +269,12 @@ class Sequence(list):
             except KeyboardInterrupt:
                 log.info("Stopping.")
                 break
-        self.foundS3d = re.search(gStereoRE,self[0])
         self.NEEDREINDEX = False
+        self.__view = self[0].view
     
+    @property
+    def view(self):
+        return self.__view
     @property
     def isStereo(self):
         return self.__isStereo
@@ -273,10 +292,10 @@ class Sequence(list):
             'R': self._get_framerange(missing=True),
             'h': self.head(),
             't': self.tail()
-            }
+        }
 
     def __str__(self):
-        return self.format('%h%p%t')
+        return self.format('%h%r%t')
 
     def __repr__(self):
         return '<pyseq.Sequence "%s">' % str(self)
@@ -287,13 +306,10 @@ class Sequence(list):
     def __contains__(self, item):
         super(Sequence, self).__contains__(Item(item))
 
-    def format(self, format=gFormat):
-        """
-        Format the stdout string.
-
+    def format(self, fmt=gFormat):
+        """Format the stdout string.
         The following directives can be embedded in the format string.
-        Format directives support padding, for example: "%%04l".
-
+        Format directives support padding, for example: "%04l".
         +-----------+-------------------------------------+
         | Directive | Meaning                             |
         +===========+=====================================+
@@ -317,19 +333,30 @@ class Sequence(list):
         +-----------+-------------------------------------+
         | ``%t``    | string after the sequence number    |
         +-----------+-------------------------------------+
-
-        :param format: Format string. Default is '%04l %h%p%t %R'.
-
+        :param fmt: Format string. Default is '%4l %h%p%t %R'.
         :return: Formatted string.
         """
-        for m in gFormatRE.finditer(format):
-            _old = '%s%s' %(m.group('pad') or '', m.group('var'))
-            _new = '(%s)%ss' %(m.group('var'), m.group('pad') or '')
-            format = format.replace(_old, _new)
-        try:
-            return format % self.__attrs__()
-        except KeyError, e:
-            raise 
+        format_char_types = {
+            's': 'i',
+            'e': 'i',
+            'l': 'i',
+            'f': 's',
+            'm': 's',
+            'p': 's',
+            'r': 's',
+            'R': 's',
+            'h': 's',
+            't': 's'
+        }
+
+        for m in gFormatRE.finditer(fmt):
+            var = m.group('var')
+            pad = m.group('pad')
+            fmt_char = format_char_types[var]
+            _old = '%s%s' % (pad or '', var)
+            _new = '(%s)%s%s' % (var, pad or '', fmt_char)
+            fmt = fmt.replace(_old, _new)
+        return fmt % self.__attrs__()
 
     def length(self):
         """:return: The length of the sequence."""
@@ -337,43 +364,31 @@ class Sequence(list):
 
     def frames(self):
         """:return: List of files in sequence."""
-        if not hasattr(self, '__frames') or not self.__frames or self.NEEDREINDEX == True:
-            self.__frames = map(int, self._get_frames())
+        if not hasattr(self, '__frames') or not self.__frames or self.__NEEDREINDEX:
+            self.__frames = list(map(int, self._get_frames()))
             self.__frames.sort()
         return self.__frames
 
     def start(self):
-        """:return: First index number in sequence."""
+        """:return: First index number in sequence
+        """
         try:
             return self.frames()[0]
         except IndexError:
-            if self.length() == 1:
-                try:
-                    '''fishy workaround we tend to have the last digit pack as frame numbers'''
-                    return int(self[0]._get_digits()[-1])
-                except:
-                    return 0
-            else:
-                return 0
+            return 0
 
     def end(self):
-        """:return: Last index number in sequence."""
+        """:return: Last index number in sequence
+        """
         try:
             return self.frames()[-1]
         except IndexError:
-            if self.length() == 1:
-                '''fishy workaround we tend to have the last digit pack as frame numbers'''
-                try:
-                    return int(self[0]._get_digits()[-1])
-                except:
-                    return 0
-            else:
-                return 0
-            
+            return 0
+
     def missing(self):
         """:return: List of missing files."""
         if not hasattr(self, '__missing') or not self.__missing:
-            self.__missing = map(int, self._get_missing())
+            self.__missing = list(map(int, self._get_missing()))
         return self.__missing
 
     def head(self):
@@ -386,55 +401,131 @@ class Sequence(list):
 
     def path(self):
         """:return: Absolute path to sequence."""
-        _dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
-        return os.path.join(_dirname, str(self))
+        return os.path.join(self[0].dirname, str(self))
     
     def dirname(self):
-        return str(os.path.dirname(os.path.abspath(self[0].path)))
+        return self[0].dirname
+
+    def includes(self, item):
+        """Checks if the item can be contained in this sequence that is if it
+        is a sibling of any of the items in the list
+        For example:
+            >>> s = Sequence(['fileA.0001.jpg', 'fileA.0002.jpg'])
+            >>> print(s)
+            fileA.1-2.jpg
+            >>> s.includes('fileA.0003.jpg')
+            True
+            >>> s.includes('fileB.0003.jpg')
+            False
+        """
+        if len(self) > 0:
+            if not isinstance(item, Item):
+                item = Item(item)
+            if self[-1] != item:
+                return self[-1].isSibling(item)
+            elif self[0] != item:
+                return self[0].isSibling(item)
+            else:
+                # it should be the only item in the list
+                if self[0] == item:
+                    return True
+
+        return True
 
     def contains(self, item):
-        """
-        Checks for sequence membership. Calls Item.isSibling() and returns
+        """Checks for sequence membership. Calls Item.isSibling() and returns
         True if item is part of the sequence.
-
         For example:
-
             >>> s = Sequence(['fileA.0001.jpg', 'fileA.0002.jpg'])
-            >>> print s
+            >>> print(s)
             fileA.1-2.jpg
             >>> s.contains('fileA.0003.jpg')
-            True
+            False
             >>> s.contains('fileB.0003.jpg')
             False
-
-        :param item: pyseq.Item class object. 
-
+        :param item: pyseq.Item class object.
         :return: True if item is a sequence member.
         """
         if len(self) > 0:
-            if type(item) is not Item:
+            if not isinstance(item, Item):
                 item = Item(item)
-            comp = self[-1]
-            if comp.isSibling(item) and comp.parts == item.parts:
-                return True
+            return self.includes(item)\
+                and self.end() >= int(item.frame) >= self.start()
+
         return False
 
     def append(self, item):
         """
         Adds another member to the sequence.
-
-        :param item: pyseq.Item object. 
-
+        :param item: pyseq.Item object.
         :exc:`SequenceError` raised if item is not a sequence member.
         """
         if type(item) is not Item:
             item = Item(item)
-        if self.contains(item):
+
+        if self.includes(item):
             super(Sequence, self).append(item)
             self.__frames = None
             self.__missing = None
         else:
-            raise SequenceError, 'Item is not a member of this sequence'
+            raise SequenceError('Item is not a member of this sequence')
+    
+    @property
+    def mtime(self):
+        """
+        returns the latest mtime of all items
+        """
+        maxDate = list()
+        for i in self:
+            maxDate.append(i.mtime)
+        return max(maxDate)
+    
+    @property
+    def size(self):
+        """
+        returns the size all items 
+        divide the result by 1024/1024 to get megabytes
+        """
+        tempSize = list() 
+        for i in self:
+            tempSize.append(i.size)
+        return sum(tempSize)
+    
+    def reIndex(self, addSub, padding=None):
+        """
+        renames the files on disk
+        reIndex the items in the sequence object egg
+        1001 + 100 = 1101
+        can change the padding too
+        @param addSub int
+        @param padding str 
+        @param run boolean 
+        """
+        if not padding:
+            padding = self.format("%p")
+        
+        if addSub > 0:
+            gen = ((image,frame) for (image,frame) in zip(reversed(self),reversed(self.frames())))
+        else:
+            gen = ((image,frame) for (image,frame) in zip(self,self.frames()))
+        
+        for image,frame in gen:
+            oldName = image.path
+            newFrame = padding % (frame + addSub)
+            newFileName ="%s%s%s" % (self.format("%h"), newFrame , self.format("%t") )
+            newName = os.path.join(image.dirname, newFileName)
+            try:
+                import shutil
+                shutil.move(oldName,newName)
+            except Exception,e:
+                log.error(e)
+            else:
+                log.info('renaming %s -->' % oldName)
+                log.info('         %s' % newName)
+                self.__NEEDREINDEX = True
+                image.frame = newFrame
+        else:
+            self.frames()
 
     def _get_padding(self):
         """:return: padding string, e.g. %07d"""
@@ -448,22 +539,23 @@ class Sequence(list):
 
     def _get_framerange(self, missing=True):
         """
-        Returns frame range string, e.g. 1-500. 
-
-        :param missing: Expand sequence to exlude missing sequence indices.
-
+        Returns frame range string, e.g. 1-500.
+        :param missing: Expand sequence to exclude missing sequence indices.
         :return: formatted frame range string.
         """
         frange = []
         start = ''
         end = ''
+
         if not missing:
             if self.frames():
-                return '%s-%s' %(self.start(), self.end())
+                return '%s-%s' % (self.start(), self.end())
             else:
                 return ''
+
         for i in range(0, len(self.frames())):
-            if int(self.frames()[i]) != int(self.frames()[i-1])+1 and i != 0:
+            if int(self.frames()[i]) != int(
+                    self.frames()[i - 1]) + 1 and i != 0:
                 if start != end:
                     frange.append('%s-%s' % (str(start), str(end)))
                 elif start == end:
@@ -481,16 +573,30 @@ class Sequence(list):
         return ' '.join(frange)
 
     def _get_frames(self):
-        """finds the sequence indexes from item names"""
+        """finds the sequence indexes from item names
+        """
         return [f.frame for f in self if f.frame is not '']
 
     def _get_missing(self):
-        """looks for missing sequence indexes in sequence"""
-        if len(self) > 1:
-            frange = xrange(self.start(), self.end())
-            return filter(lambda x: x not in self.frames(), frange)
-        return ''
-    
+        """ looks for missing sequence indexes in sequence
+        """
+        missing = []
+        frames = self.frames()
+        if len(frames) == 0:
+            return missing
+        prev = frames[0]
+        index = 1
+        while index < len(frames):
+            diff = frames[index] - prev
+            if diff == 1:
+                prev = frames[index]
+                index += 1
+            else:
+                prev += 1
+                missing.append(prev)
+
+        return missing
+
     def _calc_average_size(self, low = None, high= None):
         '''
         returns the average size of items if low and high are indicated
@@ -554,59 +660,9 @@ class Sequence(list):
         if self._fishy_jump:
             log.info('found %s items %s that vary in size by %s percent in an average range of %s frames' % (len(self._fishy_jump),self._fishy_jump,threshold,frameRange))
         return self._fishy_jump
-    
-    def _get_max_mtime(self):
-        '''
-        returns the latest mtime of all items
-        '''
-        maxDate = list()
-        for i in self:
-            maxDate.append(i._get_mtime())
-        log.info('returning max time from mono object')
-        return max(maxDate)
-        
-    def _get_size(self):
-        '''
-        returns the size all items 
-        divide the result by 1024/1024 to get megabytes
-        '''
-        tempSize = list() 
-        for i in self:
-            tempSize.append(i._get_size())
-        return sum(tempSize)
-    
-    def reIndex(self, addSub, padding=None, run=False):
-        '''
-        renames the files on disk
-        reIndex the items in the sequence object egg
-        1001 + 100 = 1101
-        can change the padding too
-        '''
-        if not padding:
-            padding = self.format("%p")
-
-        for image,frame in zip(self,self.frames()):
-            oldName = image._get_path()
-            newFrame = padding % (frame + addSub)
-            newFileName ="%s%s%s" % (self.format("%h"), newFrame , self.format("%t") )
-            newName = os.path.join(self.dirname(), newFileName)
-            try:
-                import shutil
-                if run:
-                    shutil.move(oldName,newName)
-            except Exception,e:
-                log.error(e)
-            else:
-                log.info('renaming %s -->' % oldName)
-                log.info('         %s' % newName)
-                self.NEEDREINDEX = True
-                image.frame = newFrame
-        else:
-            self.frames()
 
 
 class multiViewSequence(Sequence):
-
 
     def __init__(self, items, **kwargs):
         """
@@ -633,14 +689,10 @@ class multiViewSequence(Sequence):
             
         self.__views = kwargs.keys()
         self.__isStereo = True
-        if len(self.foundS3d.groups()[1]) > 1:
+        if len(self[0].view.groups()[1]) > 1:
             self.__viewAbbrev = '%V'
-            pattern = ''.join([ self.foundS3d.groups()[0], '%V' , self.foundS3d.groups()[-1] ])
-        elif len(self.foundS3d.groups()[1]) == 1:
+        elif len(self[0].view.groups()[1]) == 1:
             self.__viewAbbrev = '%v'
-            pattern = ''.join([ self.foundS3d.groups()[0], '%v' , self.foundS3d.groups()[-1] ])
-        searchPath = re.sub(gStereoRE, pattern, self[0])
-        self.foundS3d = re.search( gStereoRE, searchPath)
 
     @property
     def views(self):
@@ -654,15 +706,29 @@ class multiViewSequence(Sequence):
     def isStereo(self):
         return self.__isStereo
     
-    def getMaxMTime(self):
-        '''
+    @property
+    def size(self):
+        """
+        returns the size all items left and right in bytes
+        divide the result by 1024/1024 to get megabytes
+        """
+        tempSize = list()
+        for view in self.views:
+            if hasattr(self, view):
+                for image in getattr(self,view):
+                    tempSize.append(image.size)
+        return sum(tempSize)
+    
+    @property
+    def mtime(self):
+        """
         returns the latest mtime of all items left and right
-        '''
+        """
         maxDate = list()
-        for i in self.left:
-            maxDate.append(i._get_mtime())
-        for i in self.right:
-            maxDate.append(i._get_mtime())
+        for view in self.views:
+            if hasattr(self, view):
+                for image in getattr(self,view):
+                    maxDate.append(image.mtime)
         log.info('returning max time from multiView object')
         return max(maxDate)
     
@@ -684,7 +750,6 @@ class multiViewSequence(Sequence):
         
     def path(self):
         """:return: Absolute path to sequence."""
-        #_dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
         return os.path.join(self.dirname(), str(self))
     
     def dirname(self):
@@ -692,63 +757,54 @@ class multiViewSequence(Sequence):
         if not _dirname.endswith(os.sep):
             _dirname = _dirname + os.sep
         s3d = re.search(gStereoRE, _dirname)
+        ### might be that the view abbrevation is different in the pathname
+        ### /left/filename.l.1001.exr
+        ### lets check the length of the returned group and match to that 
         if s3d:
-            return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0], self.viewAbbrev, s3d.groups()[-1]),_dirname)
+            if len(s3d.groups()[1]) > 1:
+                tempViewAbbrev = '%V'
+            elif len(s3d.groups()[1]) == 1:
+                tempViewAbbrev = '%v'
+            return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0], tempViewAbbrev, s3d.groups()[-1]),_dirname)
         else:
             return _dirname
-        
-    def getSize(self):
-        '''
-        returns the size all items left and right in bytes
-        divide the result by 1024/1024 to get megabytes
-        '''
-        tempSize = list() 
-        for i in self.left:
-            tempSize.append(i._get_size())
-        for i in self.right:
-            tempSize.append(i._get_size())
-        return sum(tempSize)
     
-    def reIndex(self, addSub, padding=None, run=False):
-        '''
+    def reIndex(self, addSub, padding=None):
+        """
         renames the files on disk
         reIndex the items in the sequence object egg
         1001 + 100 = 1101
         can change the padding too
-        '''
+        @param addSub int
+        @param padding str 
+        @param run boolean 
+        """
         if not padding:
             padding = self.format("%p")
 
-        for image ,imageL, imageR ,frame in zip(self, self.left, self.right, self.frames()):
-            oldNameL = imageL._get_path()
-            oldNameR = imageR._get_path()
-            newFrame = padding % (frame + addSub)
-            newFileNameL ="%s%s%s" % (self.left.format("%h"), newFrame , self.left.format("%t") )
-            newFileNameR = "%s%s%s" % (self.right.format("%h"), newFrame , self.right.format("%t") )
-            newNameL = os.path.join(self.dirname(), newFileNameL)
-            newNameR = os.path.join(self.dirname(), newFileNameR)
-            try:
-                import shutil
-                if run:
-                    shutil.move(oldNameL,newNameL)
-                    shutil.move(oldNameR,newNameR)
-            except Exception,e:
-                log.error(e)
+        for view in self.views:
+            viewSequence = getattr(self,view)
+            if addSub > 0:
+                gen = ((image,frame) for (image,frame) in zip(reversed(viewSequence),reversed(viewSequence.frames())))
             else:
-                log.info('renaming %s -->' % oldNameL)
-                log.info('         %s' % newNameL)
-                log.info('renaming %s -->' % oldNameR)
-                log.info('         %s' % newNameR)
-                self.NEEDREINDEX = True
-                self.left.NEEDREINDEX = True
-                self.right.NEEDREINDEX = True
-                image.frame = newFrame
-                imageL.frame = newFrame
-                imageR.frame = newFrame
-        else:
-            self.frames()
-            self.left.frames()
-            self.right.frames()
+                gen = ((image,frame) for (image,frame) in zip(viewSequence,viewSequence.frames()))
+            for image,frame in gen:
+                oldName = image.path
+                newFrame = padding % (frame + addSub)
+                newFileName ="%s%s%s" % (viewSequence.format("%h"), newFrame , viewSequence.format("%t") )
+                newName = os.path.join(image.dirname, newFileName)
+                try:
+                    import shutil
+                    shutil.move(oldName,newName)
+                except Exception,e:
+                    log.error(e)
+                else:
+                    log.info('renaming %s -->' % oldName)
+                    log.info('         %s' % newName)
+                    viewSequence.__NEEDREINDEX = True
+                    image.frame = newFrame
+            else:
+                self.frames()
 
 
 def diff(f1, f2):
@@ -1043,24 +1099,27 @@ def getSequences(source,stereo=False,folders=True):
         return seqs
     else:
 
-        listName = []
-        left = []
-        right = []
-        newSeqs = []
+        multiViewSeqs = list()
         seqs.sort()
         
-        ### this is super unsexy but a fair assumption but it needs to be extended...
-        ### checking for pairs somehow or rewrite the entire s3d thingy
         if len(seqs) == 1:
             newSeqs = seqs
         else:
-            for i in seqs:
-                found = re.search(gStereoRE,str(i))
-                if found:
-                    log.info("stereo detected for %s" % i)
-                    listName.append((found,i))
+            for pair in viewPairs:
+                viewDict = dict()
+                for view in pair:
+                    ## create a dict
+                    ## per pair {'left': seq, 'right': seq}
+                    ## {'blue': seq, 'yellow': seq, 'green': seq}
+                    for seq in seqs:
+                        if seq.view:
+                            log.info("stereo detected for %s" % seq)
+                            if seq.view.groups()[1] == view:
+                                viewDict[seq.view.groups()[1]] = seq
+                if viewDict and len(viewDict) == len(pair):
+                    multiViewSeqs.append(viewDict)
                 else:
-                    newSeqs.append(i)
+                    newSeqs.append()
                     
         for d in listName:
             x = d[0]
@@ -1079,7 +1138,9 @@ def getSequences(source,stereo=False,folders=True):
                               'end':d[1].format('%h%p%t')[x.end():],
                               'eye': eye})
         
-        
+        ### need to know the pairs that correspong to each other or the multiple items...
+        ### like (left,right),(blue,green,yellow),(l,r),(gouche,droit),(rt,lt),(destra,sinistra)
+        ### then check for the found view in the pair tuple and store them in a dict match them up if it works and init the multiViewSequence with them
         for l,r in zip(left,right):
             if l in left:
                 left.remove(l)

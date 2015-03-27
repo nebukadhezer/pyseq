@@ -98,7 +98,7 @@ gFormat = '%04l %h%p%t %R'
 # regex for matching numerical characters
 gDigitsRE = re.compile(r'\d+')
 
-gStereoRE = re.compile(r'(\_|\.|\/)(left|right|l|r|%v|%V)(\_|\.|\/)')
+gStereoRE = re.compile(r'(\_|\.|\%s)(left|right|l|r|%v|%V)(\_|\.|\%s)' % (os.sep,os.sep))
 
 # regex for matching format directives
 gFormatRE = re.compile(r'%(?P<pad>\d+)?(?P<var>\w+)')
@@ -129,8 +129,8 @@ class Item(str):
         log.debug('adding %s' % item)
         self.item = item
         self.__path = getattr(item, 'path', os.path.abspath(str(item)))
-        self.__dirname = os.path.dirname(str(item))
-        self.__filename = os.path.basename(str(item))
+        self.__dirname = os.path.dirname(self.__path)
+        self.__filename = os.path.basename(self.__path)
         self.__digits = gDigitsRE.findall(self.name)
         self.__parts = gDigitsRE.split(self.name)
         if os.path.isfile(self.__path):
@@ -605,10 +605,14 @@ class Sequence(list):
             self.frames()
 
 
-class stereoSequence(Sequence):
+class multiViewSequence(Sequence):
 
 
-    def __init__(self, items, left, right):
+    def __init__(self, items, **kwargs):
+        """
+        multiViewSequence
+        
+        """
         
         super(stereoSequence, self).__init__([Item(items.pop(0))])
 
@@ -624,21 +628,33 @@ class stereoSequence(Sequence):
                 log.info("Stopping.")
                 break    
         
-        self.left = left
-        self.right = right
+        for key in kwargs:
+            setattr(self, key, kwargs[key])
+            
+        self.__views = kwargs.keys()
         self.__isStereo = True
-        if 'left' in self.left.foundS3d.groups():
-            pattern = ''.join([ self.left.foundS3d.groups()[0], '%V' , self.left.foundS3d.groups()[-1] ])
-        elif'l' in self.left.foundS3d.groups():
-            pattern = ''.join([ self.left.foundS3d.groups()[0], '%v' , self.left.foundS3d.groups()[-1] ])
-        searchPath = re.sub(gStereoRE,pattern, self[0])
+        if len(self.foundS3d.groups()[1]) > 1:
+            self.__viewAbbrev = '%V'
+            pattern = ''.join([ self.foundS3d.groups()[0], '%V' , self.foundS3d.groups()[-1] ])
+        elif len(self.foundS3d.groups()[1]) == 1:
+            self.__viewAbbrev = '%v'
+            pattern = ''.join([ self.foundS3d.groups()[0], '%v' , self.foundS3d.groups()[-1] ])
+        searchPath = re.sub(gStereoRE, pattern, self[0])
         self.foundS3d = re.search( gStereoRE, searchPath)
+
+    @property
+    def views(self):
+        return self.__views
+
+    @property
+    def viewAbbrev(self):
+        return self.__viewAbbrev
 
     @property
     def isStereo(self):
         return self.__isStereo
     
-    def _get_max_mtime(self):
+    def getMaxMTime(self):
         '''
         returns the latest mtime of all items left and right
         '''
@@ -647,53 +663,41 @@ class stereoSequence(Sequence):
             maxDate.append(i._get_mtime())
         for i in self.right:
             maxDate.append(i._get_mtime())
-        log.info('returning max time from s3d object')
+        log.info('returning max time from multiView object')
         return max(maxDate)
     
     def head(self):
         """:return: String before the sequence index number."""
         s3d = re.search(gStereoRE, self[0].head)
         if s3d:
-            if 'l' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%v', s3d.groups()[-1]), self[0].head)
-            elif 'left' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%V', s3d.groups()[-1]), self[0].head)
-            else:
-                return self[0].head
-        return self[0].head
+            return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0], self.viewAbbrev, s3d.groups()[-1]), self[0].head)
+        else:
+            return self[0].head
 
     def tail(self):
         """:return: String after the sequence index number."""
         s3d = re.search(gStereoRE, self[0].tail)
         if s3d:
-            if 'l' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%v', s3d.groups()[-1]), self[0].tail)
-            elif 'left' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%V', s3d.groups()[-1]), self[0].tail)
-            else:
-                return self[0].tail
-        return self[0].tail
-    
+            return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0], self.viewAbbrev, s3d.groups()[-1]), self[0].tail)
+        else:
+            return self[0].tail
+        
     def path(self):
         """:return: Absolute path to sequence."""
         #_dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
         return os.path.join(self.dirname(), str(self))
     
     def dirname(self):
-        _dirname = str(os.path.dirname(os.path.abspath(self[0].path)))
-        if not _dirname.endswith('/'):
-            _dirname = _dirname + '/'
+        _dirname = self[0].dirname
+        if not _dirname.endswith(os.sep):
+            _dirname = _dirname + os.sep
         s3d = re.search(gStereoRE, _dirname)
         if s3d:
-            if 'l' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%v', s3d.groups()[-1]),_dirname)
-            elif 'left' in s3d.groups():
-                return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0],'%V', s3d.groups()[-1]), _dirname)
-            else:
-                return _dirname
-        return _dirname
-
-    def _get_size(self):
+            return re.sub(gStereoRE, '%s%s%s' %(s3d.groups()[0], self.viewAbbrev, s3d.groups()[-1]),_dirname)
+        else:
+            return _dirname
+        
+    def getSize(self):
         '''
         returns the size all items left and right in bytes
         divide the result by 1024/1024 to get megabytes
@@ -1083,7 +1087,7 @@ def getSequences(source,stereo=False,folders=True):
                 right.remove(r)
             ## assuming that the order dictates that the stereo pairs reside at the same index.. from the lists
             if l['start'] == r['start'] and l['end'] == r['end'] and stereoPairs(l['eye'] , r['eye']) :
-                newSeqs.append(stereoSequence(l['file'][:],l['file'],r['file']))
+                newSeqs.append(multiViewSequence(l['file'][:],l['file'],r['file']))
             else:
                 newSeqs += [l['file'],r['file']]
 

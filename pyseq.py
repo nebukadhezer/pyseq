@@ -91,6 +91,9 @@ import re
 import logging
 from glob import glob
 from datetime import datetime
+import json
+
+newSeqs = list()
 
 # default serialization format string
 gFormat = '%4l %h%p%t %R'
@@ -98,9 +101,14 @@ gFormat = '%4l %h%p%t %R'
 # regex for matching numerical characters
 gDigitsRE = re.compile(r'\d+')
 
-gMultiViewPairs = os.environ.get('PYSEQ_MULTIVIEWPAIRS',[('left','right'),('blue','green','yellow'),('l','r'),('gouche','droit'),('rt','lt'),('destra','sinistra')])
+# default settings for view pairs
+gMultiViewPairs = json.loads(os.environ.get('PYSEQ_VIEWPAIRS','[["left","right"],["blue","green","yellow"],["l","r"],["gouche","droit"],["rt","lt"],["destra","sinistra"]]' ))
+tempList = [item for sublist in gMultiViewPairs for item in sublist]
+tempList.append('%v')
+tempList.append('%V')
 
-gStereoRE = re.compile(r'(\_|\.|\%s)(left|right|l|r|%v|%V)(\_|\.|\%s)' % (os.sep,os.sep))
+# build the search regex for views from the viewPairs
+gStereoRE = re.compile(r'(\_|\.|\%s)(%s)(\_|\.|\%s)' % (os.sep,"|".join(tempList),os.sep))
 
 # regex for matching format directives
 gFormatRE = re.compile(r'%(?P<pad>\d+)?(?P<var>\w+)')
@@ -295,7 +303,7 @@ class Sequence(list):
         }
 
     def __str__(self):
-        return self.format('%h%r%t')
+        return self.format('%h%p%t')
 
     def __repr__(self):
         return '<pyseq.Sequence "%s">' % str(self)
@@ -670,7 +678,7 @@ class multiViewSequence(Sequence):
         
         """
         
-        super(stereoSequence, self).__init__([Item(items.pop(0))])
+        super(multiViewSequence, self).__init__([Item(items.pop(0))])
 
         while items:
             f = Item(items.pop(0))
@@ -687,7 +695,7 @@ class multiViewSequence(Sequence):
         for key in kwargs:
             setattr(self, key, kwargs[key])
             
-        self.__views = kwargs.keys()
+        self.__views = sorted(kwargs.keys())
         self.__isStereo = True
         if len(self[0].view.groups()[1]) > 1:
             self.__viewAbbrev = '%V'
@@ -1008,13 +1016,50 @@ def uncompress(seqstring, format=gFormat):
         return seqs[0]
     return seqs
 
-def stereoPairs(left,right):
-    if left == 'left' and right == 'right':
-        return True
-    elif left == 'l' and right == 'r':
-        return True
+def _findViewPairs(seqs,views):
+    """
+    matches sequence into a dictionary based on a viewList
+    views = ['left','right']
+    seqs = list of sequence objects
+    returnes {'head': string of seq up to the view
+                'tail': string of seq behing view
+                'views': list(views)
+                'left': sequence object matching left
+                'right': sequence object matching right
+                'n': sequence object matching n* views}
+    -- todo I guess this all could be optimized but my brain capacity is reached :-)
+    """
+    viewDict = dict()
+    store = False
+    remover = list()
+    for seq in seqs:
+        s3d = seq.view
+        if not s3d:
+            newSeqs.append(seq)
+            remover.append(seq) 
+        elif s3d and s3d.groups()[1] in views:
+            if not store:
+                viewDict['head'] = str(seq)[:s3d.start()+1]
+                viewDict['tail'] = str(seq)[s3d.end()-1:]
+                viewDict['views'] = views
+                store = True
+            if s3d.groups()[1] not in viewDict and viewDict['head'] == str(seq)[:s3d.start()+1] and viewDict['tail'] == str(seq)[s3d.end()-1:]:
+                viewDict[s3d.groups()[1]] = seq
+                remover.append(seq)
+            elif s3d.groups()[1] in viewDict or viewDict['head'] != str(seq)[:s3d.start()+1] or viewDict['tail'] != str(seq)[s3d.end()-1:]:
+                global recycle
+                recycle = True
+    for rem in remover:
+        seqs.remove(rem)
+    if len(viewDict)==len(views)+3:
+        ## we do have an match the viewDict is full an matches the length of the specified view Pairs
+        return viewDict
     else:
-        return False
+        ## we do have a match but not all views are present
+        for view in views:
+            if view in viewDict:
+                seq = viewDict.get(view)
+                newSeqs.append(seq)
 
 def getSequences(source,stereo=False,folders=True):
     """
@@ -1085,7 +1130,7 @@ def getSequences(source,stereo=False,folders=True):
         item = Item(items.pop(0))
         found = False
         for seq in seqs[::-1]:
-            if seq.contains(item):
+            if seq.includes(item):
                 seq.append(item)
                 found = True
                 break
@@ -1098,64 +1143,35 @@ def getSequences(source,stereo=False,folders=True):
         log.info("added sequences: %s" %(seqs))
         return seqs
     else:
-
-        multiViewSeqs = list()
         seqs.sort()
-        
+        newSeqs = list()
         if len(seqs) == 1:
             newSeqs = seqs
         else:
-            for pair in viewPairs:
-                viewDict = dict()
-                for view in pair:
-                    ## create a dict
-                    ## per pair {'left': seq, 'right': seq}
-                    ## {'blue': seq, 'yellow': seq, 'green': seq}
+            multiViewSeqs = list()
+            recycle = False
+            while seqs:
+                # cycle through this till all viewPairs are matched 
+                for views in gMultiViewPairs:
+                    ret = _findViewPairs(seqs,views)
+                    if ret:
+                        multiViewSeqs.append(ret)
+                if seqs and not recycle:
+                    remover = list()
                     for seq in seqs:
-                        if seq.view:
-                            log.info("stereo detected for %s" % seq)
-                            if seq.view.groups()[1] == view:
-                                viewDict[seq.view.groups()[1]] = seq
-                if viewDict and len(viewDict) == len(pair):
-                    multiViewSeqs.append(viewDict)
-                else:
-                    newSeqs.append()
-                    
-        for d in listName:
-            x = d[0]
-            eye = x.groups()[1]
-            log.debug('found eye %s' % eye)
-            if eye == 'left' or eye == 'l' :
-                left.append({'index':x.span(),
-                             'file':d[1],
-                             'start':d[1].format('%h%p%t')[:x.start()],
-                             'end':d[1].format('%h%p%t')[x.end():],
-                             'eye': eye})
-            elif eye == 'right' or eye == 'r':
-                right.append({'index':x.span(),
-                              'file':d[1],
-                              'start':d[1].format('%h%p%t')[:x.start()],
-                              'end':d[1].format('%h%p%t')[x.end():],
-                              'eye': eye})
+                        newSeqs.append(seq)
+                        remover.append(seq)
+                    for rem in remover:
+                        seqs.remove(rem)
         
-        ### need to know the pairs that correspong to each other or the multiple items...
-        ### like (left,right),(blue,green,yellow),(l,r),(gouche,droit),(rt,lt),(destra,sinistra)
-        ### then check for the found view in the pair tuple and store them in a dict match them up if it works and init the multiViewSequence with them
-        for l,r in zip(left,right):
-            if l in left:
-                left.remove(l)
-            if r  in right:
-                right.remove(r)
-            ## assuming that the order dictates that the stereo pairs reside at the same index.. from the lists
-            if l['start'] == r['start'] and l['end'] == r['end'] and stereoPairs(l['eye'] , r['eye']) :
-                newSeqs.append(multiViewSequence(l['file'][:],l['file'],r['file']))
-            else:
-                newSeqs += [l['file'],r['file']]
-
-        if left:
-            newSeqs += [f.get('file') for f in left ]
-        if right:
-            newSeqs += [f.get('file') for f in right ]
+        for viewDict in multiViewSeqs:
+            ## get the first view 
+            seq = viewDict.get(viewDict.get('views')[0])
+            args = {}
+            for view in reversed(viewDict.get('views')):
+                args[view] = viewDict.get(view)
+            newSeqs.append(multiViewSequence(seq[:],**args))
+        
         log.debug("time: %s" %(datetime.now() - start))
         log.info("added sequences: %s" %(newSeqs))
         return newSeqs
@@ -1190,75 +1206,3 @@ def img2pyseq(path,stereo=True):
                 else:
                     if i.foundS3d.groups() == found.groups() or i.left.foundS3d.groups() == found.groups() or i.right.foundS3d.groups() == found.groups(): 
                         return i
-
-
-
-if __name__ == '__main__':
-    """
-    Run some simple unit tests. Currently, these tests depend on the
-    dummy files that live in pyseq/tests. Changing or modifying these
-    files may break the assertions in the tests below.
-    """
-    logging.basicConfig(level=logging.INFO)
-#===============================================================================
-    # test passing in a list of files
-    testRoot = os.path.join(os.path.dirname(__file__), 'tests')
-    s3dTestRoot = os.path.join(os.path.dirname(__file__), 's3dTests')
-    seqs = getSequences([os.path.join(testRoot,'fileA.0001.jpg'), 
-                         os.path.join(testRoot,'fileA.0002.jpg'), 
-                         os.path.join(testRoot,'fileB.0001.jpg')])
-    assert len(seqs) == 2
- 
-    # get a diff of two files in the same seq
-    d = diff(os.path.join(testRoot,'fileA.0001.jpg'), os.path.join(testRoot, 'fileA.0002.jpg'))
-    assert d[0]['frames'] == ('0001', '0002')
- 
-    # get a diff of two files in the same seq
-    d = diff(os.path.join(testRoot,'012_vb_110_v002.0001.png'), os.path.join(testRoot,'012_vb_110_v002.0002.png'))
-    assert d[0]['frames'] == ('0001', '0002')
- 
-    # glob some files from the tests dir
-    seqs = getSequences('./tests/fileA.*')
-    assert len(seqs) == 2
- 
-    # uncompress a few files, test the format matching
-    seq = uncompress('./tests/012_vb_110_v001.%04d.png 1-10', format='%h%p%t %r')
-    assert len(seq) == 10
-    assert seq.head() == '012_vb_110_v001.' and seq.tail() == '.png'
-    assert seq.frames() == range(1, 11)
- 
-    # ... with slightly different format matching
-    seq = uncompress('./tests/012_vb_110_v001.1-10.png', format='%h%r%t')
-    assert len(seq) == 10
-    assert seq.head() == '012_vb_110_v001.' and seq.tail() == '.png'
-    assert seq.frames() == range(1, 11)
-#===============================================================================
-
-    # grab all the seqs in the tests dir
-    seqs = getSequences(testRoot, stereo = True)
-    for s in seqs:
-        print s.format('%h%p%t %r')
-        s.reIndex(1000,padding= "%07d")
-        
-    seqs = getSequences(s3dTestRoot, stereo = True)
-    for s in seqs:
-        print s.format('%h%p%t %r')
-        print s.path()
-        if s.isStereo:
-            #print s.left.format('%h%p%t %r')
-            print s.left.frames()
-            s.reIndex(150,padding = "%05d")
-            print s.frames()
-            print s.left.frames()
-            print s.right.frames()
-            #print s.left.format("%p")
-            print s.left.path()
-            print s.right.format('%h%p%t %r')
-            print s.format('%h%p%t %r')
-            
-    seq = img2pyseq(os.path.join(s3dTestRoot,'left','012_vb_110_v001_%v.%04d.png'))
-    print seq.format('%h%p%t %r')
-    print seq.path()
-        #print s._get_size()
-        #print s._get_max_mtime()
-

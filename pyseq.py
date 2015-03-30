@@ -93,8 +93,6 @@ from glob import glob
 from datetime import datetime
 import json
 
-newSeqs = list()
-
 # default serialization format string
 gFormat = '%4l %h%p%t %R'
 
@@ -265,7 +263,7 @@ class Sequence(list):
         :return: pyseq.Sequence class instance.
         """
         super(Sequence, self).__init__([Item(items.pop(0))])
-        self.__isStereo = False
+        self.__views = False
         while items:
             f = Item(items.pop(0))
             try:
@@ -284,8 +282,8 @@ class Sequence(list):
     def view(self):
         return self.__view
     @property
-    def isStereo(self):
-        return self.__isStereo
+    def views(self):
+        return self.__views
 
     def __attrs__(self):
         """Replaces format directives with values"""
@@ -675,7 +673,15 @@ class multiViewSequence(Sequence):
     def __init__(self, items, **kwargs):
         """
         multiViewSequence
-        
+        sequence container 
+        items are items from a sequence object egg from a found left view seq[:]
+        kwargs get set as an attribute for each key 
+        {'left': sequence object left, 'right': sequence object}
+        ==> self.left = sequence object left
+            self.right = sequence.object right
+        to iterate through there is a views list
+        for view in seq.views:
+            viewSeq = getattr(seq,view)
         """
         
         super(multiViewSequence, self).__init__([Item(items.pop(0))])
@@ -696,7 +702,6 @@ class multiViewSequence(Sequence):
             setattr(self, key, kwargs[key])
             
         self.__views = sorted(kwargs.keys())
-        self.__isStereo = True
         if len(self[0].view.groups()[1]) > 1:
             self.__viewAbbrev = '%V'
         elif len(self[0].view.groups()[1]) == 1:
@@ -709,10 +714,6 @@ class multiViewSequence(Sequence):
     @property
     def viewAbbrev(self):
         return self.__viewAbbrev
-
-    @property
-    def isStereo(self):
-        return self.__isStereo
     
     @property
     def size(self):
@@ -1016,13 +1017,14 @@ def uncompress(seqstring, format=gFormat):
         return seqs[0]
     return seqs
 
-def _findViewPairs(seqs,views):
+def _findViewPairs(seqs,views,newSeqs):
     """
     matches sequence into a dictionary based on a viewList
-    views = ['left','right']
+    views = ['left','right', n*views]
     seqs = list of sequence objects
+    newSeqs = is a temporary list all seqs get append to that do not match the s3dregex or where only one view is present
     returnes {'head': string of seq up to the view
-                'tail': string of seq behing view
+                'tail': string of seq behind the view
                 'views': list(views)
                 'left': sequence object matching left
                 'right': sequence object matching right
@@ -1145,7 +1147,7 @@ def getSequences(source,stereo=False,folders=True):
     else:
         seqs.sort()
         newSeqs = list()
-        if len(seqs) == 1:
+        if len(seqs) == 1: #with one match only it cant be a multiview sequence
             newSeqs = seqs
         else:
             multiViewSeqs = list()
@@ -1153,7 +1155,7 @@ def getSequences(source,stereo=False,folders=True):
             while seqs:
                 # cycle through this till all viewPairs are matched 
                 for views in gMultiViewPairs:
-                    ret = _findViewPairs(seqs,views)
+                    ret = _findViewPairs(seqs,views,newSeqs)
                     if ret:
                         multiViewSeqs.append(ret)
                 if seqs and not recycle:

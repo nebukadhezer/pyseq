@@ -1,6 +1,17 @@
 PySeq
 =====
 
+This is a maintained fork of PySeq, with basic stereo support.
+This feature is not available via pip, only via a direct download from github.
+In addition to the usual features "eyes/views" can be specified via an envvar and then matching sequences get grouped
+together and displayed with %v/%V instead of the "eye/view" in the filename. (egg test.left.1001.exr and test.right.1001.exr)
+"eyes/views" can be more than two views such as (left2,left,middle,right,right2).
+There are additional convenience methods to iterate over items as this comes handy on the multiViewSequence class.
+- seq.getAllItems()
+Then a copy function will not work only for a normal sequence but for all its existing eyes/views.
+- img2pyseq is an attempt to construct a pyseq object without knowing its "boundaries", as uncompress does not 
+satisfy that need
+
 PySeq is a python module that finds groups of items that follow a naming convention containing 
 a numerical sequence index (e.g. fileA.001.png, fileA.002.png, fileA.003.png...) and serializes
 them into a compressed sequence string representing the entire sequence (e.g. fileA.1-3.png). It 

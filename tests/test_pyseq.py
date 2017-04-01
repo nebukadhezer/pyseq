@@ -369,6 +369,15 @@ class SequenceTestCase(unittest.TestCase):
             'file.%04d.jpg 1-10 (missing [4-5, 7-9])'
         )
 
+    def test_format_directory_attribute(self):
+        dir_name = os.path.dirname(
+            os.path.abspath(self.files[0])) + os.sep
+        seq = Sequence(self.files)
+        self.assertEqual(
+            seq.format("%D"),
+            dir_name
+            )
+
     def test__get_missing(self):
         """ test that _get_missing works
         """
@@ -621,7 +630,7 @@ class LSSTestCase(unittest.TestCase):
     def run_command(self, *args):
         """a simple wrapper for subprocess.Popen
         """
-        process = subprocess.Popen(args, stdout=subprocess.PIPE)
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, universal_newlines=True)
 
         # loop until process finishes and capture stderr output
         stdout_buffer = []

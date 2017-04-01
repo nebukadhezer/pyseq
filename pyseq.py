@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # ---------------------------------------------------------------------------------------------
-# Copyright (c) 2011-2015, Ryan Galloway (ryan@rsgalloway.com)
+# Copyright (c) 2011-2016, Ryan Galloway (ryan@rsgalloway.com)
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -182,19 +182,17 @@ class Item(str):
 
     def __init__(self, item):
         super(Item, self).__init__()
-        log.debug('adding %s' % item)
+        log.debug('adding %s', item)
         self.item = item
-        self.__path = getattr(item, 'path', os.path.abspath(str(item)))
-        self.__dirname = os.path.dirname(self.__path)
-        self.__filename = os.path.basename(str(item))
-        self.__digits = digits_re.findall(self.__filename)
-        self.__parts = digits_re.split(self.__filename)
-        #self.__size = os.path.getsize(self.__path) if self.exists else 0
-        #self.__mtime = os.path.getmtime(self.__path) if self.exists else 0
+        self.__path = getattr(item, 'path', None)
+        if self.__path is None:
+            self.__path = os.path.abspath(str(item))
+        self.__dirname, self.__filename = os.path.split(self.__path)
+        self.__digits = digits_re.findall(self.name)
+        self.__parts = digits_re.split(self.name)
         self.__view = re.search(views_re, self.__filename)
         self.__md5 = None
         self.__stat = None
-
 
         # modified by self.is_sibling()
         self.frame = None
@@ -340,9 +338,9 @@ class Item(str):
 
         return is_sibling
 
+
 class Sequence(list):
-    """
-    Extends list class with methods that handle item sequentialness.
+    """Extends list class with methods that handle item sequentialness.
 
     For example:
 
@@ -375,7 +373,7 @@ class Sequence(list):
         self.__dirty = False
         self.__views = False
         self.__frames = None
-    
+
         while items:
             f = Item(items.pop(0))
             try:
@@ -393,23 +391,24 @@ class Sequence(list):
     @property
     def view(self):
         return self.__view
+    
     @property
     def views(self):
         return self.__views
 
     def __attrs__(self):
-        """Replaces format directives with values."""
+        """Replaces format directives with callables to get their values."""
         return {
             'l': self.length,
             's': self.start,
             'e': self.end,
             'f': self.frames,
             'm': self.missing,
-            'M': functools.partial(self._get_framerange, self.missing, missing=True),
+            'M': functools.partial(self._get_framerange, self.missing(), missing=True),
             'd': lambda *x: self.size,
             'p': self._get_padding,
-            'r': functools.partial(self._get_framerange, self.frames, missing=False),
-            'R': functools.partial(self._get_framerange, self.frames, missing=True),
+            'r': functools.partial(self._get_framerange, self.frames(), missing=False),
+            'R': functools.partial(self._get_framerange, self.frames(), missing=True),
             'h': self.head,
             't': self.tail
         }
@@ -793,7 +792,7 @@ class Sequence(list):
             else:
                 log.debug('renaming %s %s' % (oldName, newName))
                 self.__dirty = True
-                image.frame = newFrame
+                image.frame = int(newFrame)
 
         else:
             self.frames()
@@ -810,9 +809,10 @@ class Sequence(list):
         except IndexError:
             return ''
 
-    def _get_framerange(self, input, missing=True):
-        """Returns frame range string, e.g. 1-500.
-
+    def _get_framerange(self, frames, missing=True):
+        """Returns frame range string, e.g. [1-500].
+        
+        :param frames: list of ints like [1,4,8,12,15].
         :param missing: Expand sequence to exclude missing sequence indices.
 
         :return: formatted frame range string.
@@ -820,8 +820,6 @@ class Sequence(list):
         frange = []
         start = ''
         end = ''
-        frames = input()
-
         if not missing:
             if frames:
                 if len(frames) == 1:
@@ -1134,6 +1132,7 @@ def uncompress(seq_string, fmt=global_format):
 
     # escape any re chars in format
     fmt = re.escape(fmt)
+    
     # replace \% with % back again
     fmt = fmt.replace('\\%', '%')
 
@@ -1152,6 +1151,8 @@ def uncompress(seq_string, fmt=global_format):
     regex = re.compile(fmt)
     match = regex.match(name)
 
+    log.debug("match: %s" % match.groupdict() if match else "")
+
     frames = []
     missing = []
     s = None
@@ -1163,6 +1164,7 @@ def uncompress(seq_string, fmt=global_format):
 
     try:
         pad = match.group('p')
+
     except IndexError:
         pad = "%d"
 
@@ -1178,8 +1180,8 @@ def uncompress(seq_string, fmt=global_format):
                 start = int(splits[0])
                 end = int(splits[1])
                 frames.extend(range(start, end + 1))
+
             else:
-                # just append the number
                 end = int(number_group)
                 pad_len = max(pad_len, len(number_group))
                 frames.append(end)
